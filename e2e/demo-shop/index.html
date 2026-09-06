@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo Shop - MoneroPay Widget Test</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 640px;
+    margin: 40px auto;
+    padding: 0 16px;
+    color: #1a1a1a;
+  }
+  h1 { font-size: 22px; }
+  .product {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    margin-bottom: 20px;
+  }
+  .price { font-weight: 700; font-size: 18px; }
+  button {
+    background: #ea580c;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled { background: #d1d5db; cursor: default; }
+  #config {
+    font-size: 12px;
+    color: #6b7280;
+    margin-bottom: 24px;
+    padding: 10px 12px;
+    background: #f9fafb;
+    border-radius: 8px;
+  }
+  #config input {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 2px 0 8px;
+    padding: 4px 6px;
+  }
+  #checkout {
+    margin-top: 20px;
+  }
+  #status-log {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: #374151;
+    white-space: pre-wrap;
+    margin-top: 12px;
+    padding: 10px;
+    background: #f3f4f6;
+    border-radius: 8px;
+    min-height: 20px;
+  }
+</style>
+</head>
+<body>
+<h1>Demo Shop</h1>
+<p>
+  A minimal static merchant page - the same shape a real site on GitHub Pages would
+  use - that embeds the MoneroPay checkout widget via <code>moneropay-client.js</code>
+  loaded from a genuinely different origin than this page.
+</p>
+
+<details id="config">
+  <summary>Connection settings (auto-filled from the URL's query string)</summary>
+  <label>MoneroPay server endpoint<input id="endpoint-input" value="http://127.0.0.1:8080"></label>
+  <label>Tenant public key<input id="pk-input" value=""></label>
+</details>
+
+<div class="product">
+  <div>
+    <div><strong>Stagenet Test Widget</strong></div>
+    <div class="price">$0.05 USD</div>
+  </div>
+  <button id="buy-button">Buy with Monero</button>
+</div>
+
+<div id="checkout"></div>
+<div id="status-log"></div>
+
+<script>
+  var params = new URLSearchParams(window.location.search);
+  var endpointInput = document.getElementById("endpoint-input");
+  var pkInput = document.getElementById("pk-input");
+  if (params.get("endpoint")) endpointInput.value = params.get("endpoint");
+  if (params.get("pk")) pkInput.value = params.get("pk");
+
+  var statusLog = document.getElementById("status-log");
+  function log(line) {
+    statusLog.textContent += "[" + new Date().toLocaleTimeString() + "] " + line + "\n";
+  }
+
+  function loadClientLibrary(endpoint) {
+    return new Promise(function (resolve, reject) {
+      var existing = document.getElementById("moneropay-client-script");
+      if (existing) existing.remove();
+      var script = document.createElement("script");
+      script.id = "moneropay-client-script";
+      script.src = endpoint.replace(/\/+$/, "") + "/static/moneropay-client.js";
+      script.onload = resolve;
+      script.onerror = function () { reject(new Error("failed to load moneropay-client.js from " + script.src)); };
+      document.head.appendChild(script);
+    });
+  }
+
+  document.getElementById("buy-button").addEventListener("click", function () {
+    var endpoint = endpointInput.value.trim();
+    var publicKey = pkInput.value.trim();
+    if (!publicKey) {
+      log("ERROR: set a tenant public key first (or pass ?pk=pk_... in the URL)");
+      return;
+    }
+
+    var button = document.getElementById("buy-button");
+    button.disabled = true;
+    log("loading client library from " + endpoint + " ...");
+
+    loadClientLibrary(endpoint)
+      .then(function () {
+        log("creating order via MoneroPay.createOrder() ...");
+        return MoneroPay.createOrder({
+          endpoint: endpoint,
+          publicKey: publicKey,
+          merchantOrderId: "demo-shop-" + Date.now(),
+          fiatAmount: 0.05,
+          fiatCurrency: "USD",
+          description: "Stagenet Test Widget",
+        });
+      })
+      .then(function (order) {
+        log("order created: " + order.paymentId + " (" + order.xmrAmountPiconero + " piconero to " + order.address + ")");
+        MoneroPay.mount("#checkout", order, {
+          onStatusChange: function (status) {
+            log("status changed: " + status);
+          },
+          onPaid: function () {
+            log("PAID - order complete");
+          },
+          onExpired: function () {
+            log("order expired");
+          },
+        });
+      })
+      .catch(function (err) {
+        log("ERROR: " + err.message);
+        button.disabled = false;
+      });
+  });
+</script>
+</body>
+</html>

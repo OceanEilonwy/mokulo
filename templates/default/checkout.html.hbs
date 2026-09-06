@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monero Payment</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --card: #f9fafb;
+    --pending: #6b7280;
+    --progress: #d97706;
+    --paid: #16a34a;
+    --partial: #ea580c;
+    --expired: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111827;
+      --fg: #f3f4f6;
+      --muted: #9ca3af;
+      --border: #374151;
+      --card: #1f2937;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+  }
+  .card {
+    max-width: 420px;
+    margin: 0 auto;
+  }
+  .status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 13px;
+    color: white;
+  }
+  .status-pending, .status-unknown { background: var(--pending); }
+  .status-unconfirmed, .status-confirming { background: var(--progress); }
+  .status-paid { background: var(--paid); }
+  .status-partial { background: var(--partial); }
+  .status-expired { background: var(--expired); }
+
+  .double-spend-banner {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #fee2e2;
+    color: #991b1b;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  @media (prefers-color-scheme: dark) {
+    .double-spend-banner { background: #450a0a; color: #fecaca; }
+  }
+
+  .amount {
+    font-size: 28px;
+    font-weight: 700;
+    margin: 12px 0 4px;
+  }
+  .fiat-amount { color: var(--muted); margin-bottom: 16px; }
+
+  .qr-wrap {
+    display: flex;
+    justify-content: center;
+    background: white;
+    padding: 12px;
+    border-radius: 12px;
+    margin-bottom: 16px;
+  }
+  .qr-wrap svg { width: 200px; height: 200px; }
+
+  .address-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 16px;
+  }
+  .address-text {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    word-break: break-all;
+    flex: 1;
+  }
+  .copy-btn {
+    flex-shrink: 0;
+    background: var(--fg);
+    color: var(--bg);
+    border: none;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .progress-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .progress-bar {
+    height: 6px;
+    border-radius: 999px;
+    background: var(--border);
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--progress);
+  }
+
+  .payments-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-top: 8px;
+  }
+  .payments-table th, .payments-table td {
+    text-align: left;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+  }
+
+  .meta {
+    margin-top: 16px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <span id="status-badge" class="status-badge {{status_class}}">{{status_label}}</span>
+
+  {{#if double_spend_detected_at}}
+  <div id="double-spend-banner" class="double-spend-banner">
+    A payment toward this order was reversed by a blockchain double-spend, detected
+    at <span id="double-spend-time" data-timestamp="{{double_spend_detected_at}}"></span>.
+    {{#unless is_terminal}}This order's status above reflects only still-valid payments.{{/unless}}
+  </div>
+  {{/if}}
+
+  <div class="amount" id="xmr-amount">{{xmr_amount}} XMR</div>
+  <div class="fiat-amount">≈ {{fiat_amount}} {{fiat_currency}}</div>
+
+  <div class="qr-wrap">{{{qr_code_svg}}}</div>
+
+  <div class="address-box">
+    <span class="address-text" id="address">{{address}}</span>
+    <button class="copy-btn" id="copy-btn" type="button">Copy</button>
+  </div>
+
+  <div class="progress-row">
+    <span id="confirmations-label">{{confirmations}} / {{confirmations_required}} confirmations</span>
+    <span id="received-label">{{amount_received_xmr}} XMR received</span>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width: 0%"></div></div>
+
+  {{#if payments}}
+  <table class="payments-table">
+    <thead><tr><th>Tx</th><th>Amount</th><th>Confirmations</th></tr></thead>
+    <tbody id="payments-body">
+      {{#each payments}}
+      <tr>
+        <td>{{this.txid_short}}</td>
+        <td>{{this.amount_xmr}} XMR</td>
+        <td>{{#if this.is_zero_conf}}mempool{{else}}{{this.confirmations}}{{/if}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+  {{/if}}
+
+  <div class="meta">
+    Payment ID: {{payment_id}}<br>
+    {{#unless is_terminal}}Expires <span id="expires-at" data-timestamp="{{expires_at}}"></span>{{/unless}}
+  </div>
+</div>
+
+<script>
+(function () {
+  var paymentId = {{{json payment_id}}};
+  var isTerminal = {{#if is_terminal}}true{{else}}false{{/if}};
+  var confirmationsRequired = {{confirmations_required}};
+
+  function formatTimestamp(el) {
+    var ts = el.getAttribute('data-timestamp');
+    if (!ts) return;
+    var date = new Date(parseInt(ts, 10) * 1000);
+    el.textContent = date.toLocaleString();
+  }
+  document.querySelectorAll('[data-timestamp]').forEach(formatTimestamp);
+
+  document.getElementById('copy-btn').addEventListener('click', function () {
+    var text = document.getElementById('address').textContent;
+    navigator.clipboard.writeText(text).then(function () {
+      var btn = document.getElementById('copy-btn');
+      var original = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(function () { btn.textContent = original; }, 1500);
+    });
+  });
+
+  function postToParent(status) {
+    if (window.parent !== window) {
+      window.parent.postMessage({ source: 'moneropay', paymentId: paymentId, status: status }, '*');
+    }
+  }
+  postToParent({{{json status}}});
+
+  // Polling is a deliberate simplification over the SSE endpoint described in
+  // docs/DESIGN.md - see http/mod.rs's module doc for what's built vs not. A
+  // customer's tab open for the length of a checkout doesn't need push-perfect
+  // updates, and this keeps the page dependency-free.
+  if (isTerminal) return;
+
+  var pollUrl = window.location.pathname.replace('/pay/v1/', '/api/v1/t/').replace(/\/[^\/]+$/, '') + '';
+  // Reconstruct the status API URL from the current page path:
+  // /pay/v1/{pk}/{payment_id} -> /api/v1/t/{pk}/orders/{payment_id}
+  var parts = window.location.pathname.split('/').filter(Boolean); // ["pay", "v1", pk, payment_id]
+  var pk = parts[2];
+  var statusUrl = '/api/v1/t/' + pk + '/orders/' + paymentId;
+
+  var lastStatus = {{{json status}}};
+
+  function poll() {
+    fetch(statusUrl).then(function (r) { return r.json(); }).then(function (data) {
+      document.getElementById('confirmations-label').textContent =
+        data.confirmations + ' / ' + confirmationsRequired + ' confirmations';
+      var pct = Math.min(100, Math.round((data.confirmations / confirmationsRequired) * 100));
+      document.getElementById('progress-fill').style.width = pct + '%';
+
+      if (data.status !== lastStatus) {
+        // A real status transition - simplest correct thing is a reload, which
+        // re-renders the full page (badge text/class, terminal-state layout,
+        // double-spend banner) from the server-rendered template rather than
+        // duplicating that rendering logic in JS.
+        postToParent(data.status);
+        window.location.reload();
+        return;
+      }
+      setTimeout(poll, 3000);
+    }).catch(function () {
+      setTimeout(poll, 5000);
+    });
+  }
+  setTimeout(poll, 3000);
+})();
+</script>
+</body>
+</html>

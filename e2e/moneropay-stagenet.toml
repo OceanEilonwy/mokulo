@@ -1,0 +1,49 @@
+# Real end-to-end test config: a moneropay server bootstrapped with the
+# merchant watch-only wallet persisted in e2e/stagenet-wallets.json, scanning a
+# real public stagenet node. See e2e/README.md for how this is used.
+
+[monero_node.stagenet]
+host = "node.monerodevs.org"
+port = 38089
+ssl = false
+
+[wallet]
+primary_address = "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg"
+private_view_key = "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e"
+public_spend_key = "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335"
+network = "stagenet"
+allowed_origins = ["http://127.0.0.1:8190"]
+
+[exchange_rate]
+provider = "fixed"
+[exchange_rate.rates]
+# `[exchange_rate.rates]` values are XMR-per-unit-of-fiat decimal strings, not
+# piconero (see Config::build_fixed_rate_provider / parse_xmr_to_piconero) -
+# "0.0067" here means 1 USD = 0.0067 XMR (~$149/XMR, roughly realistic). Not a
+# live market rate, just a fixed test value: it makes a human-readable
+# fiat_amount like "0.05" map to a genuinely tiny real stagenet payment
+# (335_000 micro-XMR = 0.000335 XMR = 335_000_000 piconero).
+USD = "0.0067"
+
+[payment]
+# Real stagenet blocks land roughly every ~2 minutes; requiring several
+# confirmations would make the E2E test spend most of its time waiting on the
+# chain rather than exercising moneropay's own detection logic. Since the test
+# payment is tiny by design, it's covered entirely by zero_conf_max_xmr below.
+confirmations_required = 1
+# XMR-denominated, not fiat (payment.zero_conf_max_fiat was renamed after a real
+# production config.rs fix - it was silently being read as XMR while named
+# "fiat", which meant an operator who genuinely meant a fiat ceiling configured
+# ~300x the zero-conf exposure they intended). 0.01 XMR comfortably covers this
+# test's 0.000335 XMR payment with the same ~20-30x margin the old $1.00-vs-$0.05
+# figures had.
+zero_conf_max_xmr = "0.01"
+order_expiry_minutes = 30
+reorg_check_depth = 20
+mempool_poll_interval_ms = 2000
+
+[server]
+bind = "127.0.0.1:8180"
+
+[webhooks]
+allow_private_urls = false

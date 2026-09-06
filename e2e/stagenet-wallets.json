@@ -1,0 +1,33 @@
+{
+  "_comment": "Stagenet test fixtures only - stagenet XMR has no monetary value, so persisting these keys here is safe and deliberate (it lets the E2E test in e2e/README.md be re-run without regenerating wallets or re-funding from the faucet every time). Never do this with mainnet keys.",
+  "customer": {
+    "address": "5648a3A1PX6Fz3L3bSop2LXLKjmrxi1sCCvVdM15AQYL4RoHE4TqSiQ6d6qXt6cwG7a4GLQfA6LbYBoM8XPFEVvNMYeUDF3",
+    "known_txids": [
+      "7984250a50f528ba470e3bd35bbb4b675a057d2f00a27339de786206f2698d37",
+      "ea63496da0ba8b508cbb67d1877fd514396da7f6095e475a0c0382f3bacd8538",
+      "23104077712fee92a76eeaae331e0a320040a217c49b693ca409efb94e19f9a7",
+      "07304ebc3c39eaf26437d208f343d4f880cb23adfa4319114bafaa697da36fb1",
+      "29e0f482f04ec0933bb39de1d8ea1b69e282a9877727ba949f8d5243b30f750d",
+      "83ce190f60c240b76b27c6b8b39b0e840afdcd32a0ef9b06c7570c56a2a24ce6",
+      "f6b4707fbf7b341bf1a4e74e81531d74d1e8326b9ffc5d0e648a5ecc2e8b35dc",
+      "11fa6db9b00c8d08d51ca521d0e9cc8f5e0832ec68710ad735db93babc841ac6"
+    ],
+    "known_txids_comment": "Every txid that ever paid this wallet - the two original faucet payouts plus every test run's own tx (its change output pays the wallet again). tests/e2e_stagenet.rs scans all of these each run (skipping any not yet confirmed) and appends its own new tx here on success, so later runs automatically pick up earlier change without needing a fresh faucet payout every time.",
+    "mnemonic": "affair cube ablaze cynical lurk gather arises last oatmeal guide sniff tufts lyrics wounded zigzags deftly tapestry tipsy pests ingested vain feast cottage duration wounded",
+    "private_spend_key": "df97ded57234e9cfb41c2a1e338721162109db0326239e056fe7ea8228c4f30e",
+    "private_view_key": "551e88e5bfeb84e1b1aa06a48048396d8023335e73d789167d325b614082b90d",
+    "role": "The payer - needs full spend capability to receive faucet funds and send the test payment to whatever address moneropay derives for an order. tests/e2e_stagenet.rs uses private_spend_key/private_view_key directly (via the monero-wallet crate) to scan for its own received outputs and sign a real spend, with no external wallet-rpc process involved. private_spend_key/private_view_key were extracted once via `monero-wallet-rpc`'s query_key RPC (run in --offline mode, since a wedge was observed when query_key raced an online wallet-rpc's automatic post-restore refresh); the mnemonic is kept only as a human-recoverable backup of the same key material."
+  },
+  "faucet_funding_txid": "7984250a50f528ba470e3bd35bbb4b675a057d2f00a27339de786206f2698d37",
+  "faucet_funding_txid_2": "ea63496da0ba8b508cbb67d1877fd514396da7f6095e475a0c0382f3bacd8538",
+  "faucet_used": "https://stagenet-faucet.xmr-tw.org/",
+  "merchant": {
+    "address": "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg",
+    "mnemonic": "yahoo friendly keyboard duckling ablaze likewise hiker kiosk hacksaw session ardent twice sowed lamb zigzags ourselves atrium omnibus otherwise bikini sunken goodbye wetsuit ablaze friendly",
+    "private_view_key": "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e",
+    "role": "The moneropay tenant under test - watch-only. Only private_view_key and spend_public_key are ever given to moneropay; private_spend_key/mnemonic are recorded here only so this wallet can be fully recovered/inspected later, not because moneropay needs them.",
+    "spend_public_key": "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335"
+  },
+  "network": "stagenet",
+  "stagenet_node_used_for_wallet_sync": "http://node.monerodevs.org:38089"
+}

@@ -1,0 +1,57 @@
+[package]
+name = "moneropay-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.92"
+axum = { version = "0.8.9", features = ["macros"] }
+handlebars = "6.4.4"
+hex = "0.4.3"
+hmac = "0.13.0"
+monero = "0.22.0"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+rand = "0.10.2"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["full"] }
+toml = "1.1.5"
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["limit", "cors"] }
+url = "2.5.8"
+uuid = { version = "1.26.0", features = ["v4"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tokio = { version = "1.53.1", features = ["rt", "macros"] }
+# e2e-test-only: constructs, signs, and broadcasts a real Monero transaction
+# directly against a daemon's plain RPC, so the e2e test (tests/e2e_stagenet.rs)
+# needs nothing beyond the public stagenet node itself - no external wallet-rpc
+# process. monero-wallet is the actively-maintained successor to the
+# "monero-serai" transaction-construction library (real CLSAG + Bulletproofs+
+# implementation over curve25519-dalek, used by the Serai project); it pins
+# rand_core 0.6 (the RngCore/CryptoRng traits its signing functions require), one
+# major version behind this crate's own `rand = "0.10"` - hence the separate
+# `rand_core` dependency below rather than reusing `rand`'s.
+#
+# monero-daemon-rpc (not monero-simple-request-rpc) supplies the RPC client type:
+# its `HttpTransport` is a single-method trait `tests/support/mod.rs` implements
+# directly over this crate's own `reqwest::Client`, rather than pulling in a
+# second, unused TLS stack (`simple-request`/`hyper-rustls`/`ring`) purely to
+# reach a plain http:// node - `monero-simple-request-rpc` was tried first and
+# dropped for exactly this reason.
+monero-wallet = "0.2.0"
+monero-daemon-rpc = "0.2.0"
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Required directly: monero_ed25519::Scalar/Point implement no arithmetic
+# operators of their own (only #[doc(hidden)] from/into bridges to this crate),
+# so the basepoint-multiplication and key-image glue in tests/support/mod.rs has
+# no way to avoid it. Not pinned to an exact patch - Cargo unifies semver-compatible
+# versions with monero-wallet's own copy regardless, so pinning only risks a
+# resolution failure if monero-wallet later requires a newer 4.x.
+curve25519-dalek = { version = "4", default-features = false, features = ["precomputed-tables", "zeroize"] }
