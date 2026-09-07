@@ -1,1 +1,8 @@
 /target
+
+# SQLite database + WAL/SHM sidecar files created by running moneropay-core
+# locally (Store::open_file("moneropay.db") in main.rs) - runtime state, not
+# source. e2e/ has its own copy of this pattern for the same reason.
+moneropay.db
+moneropay.db-shm
+moneropay.db-wal

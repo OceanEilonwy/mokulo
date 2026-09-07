@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Monero Payment</title>
+<title>{{status_label}} · Monero Payment</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -13,9 +13,12 @@
     --border: #e5e7eb;
     --card: #f9fafb;
     --pending: #6b7280;
-    --progress: #d97706;
-    --paid: #16a34a;
-    --partial: #ea580c;
+    /* Status badge colors are white text on a solid fill - see the contrast note
+       below, these are not the "obvious" shade of each color but ones chosen to
+       actually pass it. */
+    --progress: #b45309;
+    --paid: #15803d;
+    --partial: #c2410c;
     --expired: #dc2626;
   }
   @media (prefers-color-scheme: dark) {
@@ -39,6 +42,22 @@
   .card {
     max-width: 420px;
     margin: 0 auto;
+  }
+  /* Standard, robust "visually hidden but present for assistive tech" technique -
+     deliberately not display:none/visibility:hidden, which remove content from the
+     accessibility tree as completely as from the screen, and not the older
+     left:-9999px technique, which can introduce unwanted horizontal scroll. */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
   .status-badge {
     display: inline-block;
@@ -110,6 +129,10 @@
     font-size: 12px;
     cursor: pointer;
   }
+  .copy-btn:focus-visible {
+    outline: 2px solid var(--progress);
+    outline-offset: 2px;
+  }
 
   .progress-row {
     display: flex;
@@ -151,36 +174,82 @@
 </style>
 </head>
 <body>
-<div class="card">
-  <span id="status-badge" class="status-badge {{status_class}}">{{status_label}}</span>
+<main class="card">
+  <h1 class="visually-hidden">Monero payment of {{xmr_amount}} XMR</h1>
+
+  <!-- role="status" gets an implicit aria-live="polite" and aria-atomic="true" -
+       present at load (this is the WAI-ARIA APG's own status-role pattern: a
+       container that exists from the start and has its content replaced), and
+       matters here because a status transition this page can detect *without* a
+       full reload would otherwise never be announced. `aria-atomic` is repeated
+       explicitly because role=status's implicit default is inconsistently honored
+       across assistive tech (per WCAG technique ARIA22). -->
+  <span
+    id="status-badge"
+    class="status-badge {{status_class}}"
+    role="status"
+    aria-atomic="true"
+  >{{status_label}}</span>
 
   {{#if double_spend_detected_at}}
-  <div id="double-spend-banner" class="double-spend-banner">
+  <!-- role="alert" (assertive, interrupts) rather than role="status": this is a
+       real reversal of funds a customer needs to notice, not routine progress. -->
+  <div id="double-spend-banner" class="double-spend-banner" role="alert">
     A payment toward this order was reversed by a blockchain double-spend, detected
-    at <span id="double-spend-time" data-timestamp="{{double_spend_detected_at}}"></span>.
+    at <span id="double-spend-time" data-timestamp="{{double_spend_detected_at}}">{{double_spend_detected_at}}</span>.
     {{#unless is_terminal}}This order's status above reflects only still-valid payments.{{/unless}}
   </div>
   {{/if}}
 
-  <div class="amount" id="xmr-amount">{{xmr_amount}} XMR</div>
+  <span class="visually-hidden" id="amount-label">Amount due</span>
+  <div class="amount" id="xmr-amount" aria-labelledby="amount-label">{{xmr_amount}} XMR</div>
   <div class="fiat-amount">≈ {{fiat_amount}} {{fiat_currency}}</div>
 
+  <!-- The QR code is redundant with the copyable address text right below it -
+       everything it encodes is already available in an accessible form - so it's
+       hidden from assistive tech (see qr_svg_for_html in http/public.rs, which
+       stamps role="presentation" aria-hidden="true" focusable="false" onto the
+       generated <svg> itself) rather than announced as an unlabeled image. -->
   <div class="qr-wrap">{{{qr_code_svg}}}</div>
 
+  <span class="visually-hidden" id="address-label">Payment address</span>
   <div class="address-box">
-    <span class="address-text" id="address">{{address}}</span>
-    <button class="copy-btn" id="copy-btn" type="button">Copy</button>
+    <span class="address-text" id="address" aria-labelledby="address-label">{{address}}</span>
+    <!-- aria-label gives a fuller accessible name than the visible "Copy" text
+         alone (still containing it, per WCAG 2.5.3 Label in Name); aria-live so the
+         "Copied!" confirmation that replaces the button's text is actually
+         announced, not just visually flashed. -->
+    <button
+      class="copy-btn"
+      id="copy-btn"
+      type="button"
+      aria-label="Copy payment address to clipboard"
+      aria-live="polite"
+    >Copy</button>
   </div>
 
-  <div class="progress-row">
+  <!-- aria-live so a confirmation count that changes via polling (no page reload)
+       is announced; aria-atomic so the whole sentence is read, not just whatever
+       sub-string happened to change. -->
+  <div class="progress-row" aria-live="polite" aria-atomic="true">
     <span id="confirmations-label">{{confirmations}} / {{confirmations_required}} confirmations</span>
     <span id="received-label">{{amount_received_xmr}} XMR received</span>
   </div>
-  <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width: 0%"></div></div>
+  <div
+    class="progress-bar"
+    id="progress-bar"
+    role="progressbar"
+    aria-labelledby="confirmations-label"
+    aria-valuemin="0"
+    aria-valuemax="{{confirmations_required}}"
+    aria-valuenow="{{confirmations}}"
+    aria-valuetext="{{confirmations}} of {{confirmations_required}} confirmations"
+  ><div class="progress-fill" id="progress-fill" style="width: 0%"></div></div>
 
   {{#if payments}}
   <table class="payments-table">
-    <thead><tr><th>Tx</th><th>Amount</th><th>Confirmations</th></tr></thead>
+    <caption class="visually-hidden">Individual payments received toward this order</caption>
+    <thead><tr><th scope="col">Tx</th><th scope="col">Amount</th><th scope="col">Confirmations</th></tr></thead>
     <tbody id="payments-body">
       {{#each payments}}
       <tr>
@@ -195,9 +264,9 @@
 
   <div class="meta">
     Payment ID: {{payment_id}}<br>
-    {{#unless is_terminal}}Expires <span id="expires-at" data-timestamp="{{expires_at}}"></span>{{/unless}}
+    {{#unless is_terminal}}Expires <span id="expires-at" data-timestamp="{{expires_at}}">{{expires_at}}</span>{{/unless}}
   </div>
-</div>
+</main>
 
 <script>
 (function () {
@@ -205,6 +274,10 @@
   var isTerminal = {{#if is_terminal}}true{{else}}false{{/if}};
   var confirmationsRequired = {{confirmations_required}};
 
+  // The initial text content of a [data-timestamp] element is the raw epoch
+  // seconds (rendered server-side above) rather than nothing - if this script
+  // fails to run at all, a screen reader or a JS-disabled browser still gets a
+  // real, if unformatted, value instead of an empty, silently-missing one.
   function formatTimestamp(el) {
     var ts = el.getAttribute('data-timestamp');
     if (!ts) return;
@@ -236,7 +309,6 @@
   // updates, and this keeps the page dependency-free.
   if (isTerminal) return;
 
-  var pollUrl = window.location.pathname.replace('/pay/v1/', '/api/v1/t/').replace(/\/[^\/]+$/, '') + '';
   // Reconstruct the status API URL from the current page path:
   // /pay/v1/{pk}/{payment_id} -> /api/v1/t/{pk}/orders/{payment_id}
   var parts = window.location.pathname.split('/').filter(Boolean); // ["pay", "v1", pk, payment_id]
@@ -244,11 +316,24 @@
   var statusUrl = '/api/v1/t/' + pk + '/orders/' + paymentId;
 
   var lastStatus = {{{json status}}};
+  var lastConfirmations = {{confirmations}};
 
   function poll() {
     fetch(statusUrl).then(function (r) { return r.json(); }).then(function (data) {
-      document.getElementById('confirmations-label').textContent =
-        data.confirmations + ' / ' + confirmationsRequired + ' confirmations';
+      // Only touch the DOM - and therefore only let the aria-live region on
+      // .progress-row announce anything - when the confirmation count actually
+      // changed. Unconditionally re-setting identical text every 3 seconds would
+      // have a screen reader repeat "X / Y confirmations" on a timer regardless of
+      // whether anything happened, which is exactly the kind of live-region spam
+      // the WAI-ARIA APG's status-role guidance warns against.
+      if (data.confirmations !== lastConfirmations) {
+        lastConfirmations = data.confirmations;
+        document.getElementById('confirmations-label').textContent =
+          data.confirmations + ' / ' + confirmationsRequired + ' confirmations';
+        var bar = document.getElementById('progress-bar');
+        bar.setAttribute('aria-valuenow', data.confirmations);
+        bar.setAttribute('aria-valuetext', data.confirmations + ' of ' + confirmationsRequired + ' confirmations');
+      }
       var pct = Math.min(100, Math.round((data.confirmations / confirmationsRequired) * 100));
       document.getElementById('progress-fill').style.width = pct + '%';
 
@@ -256,7 +341,11 @@
         // A real status transition - simplest correct thing is a reload, which
         // re-renders the full page (badge text/class, terminal-state layout,
         // double-spend banner) from the server-rendered template rather than
-        // duplicating that rendering logic in JS.
+        // duplicating that rendering logic in JS. A full navigation is itself
+        // screen-reader-accessible (assistive tech treats it like any other page
+        // load), so this isn't an accessibility regression versus an in-place
+        // update - it just means the *new* page's role="status" badge above is
+        // what announces the transition, not this script.
         postToParent(data.status);
         window.location.reload();
         return;

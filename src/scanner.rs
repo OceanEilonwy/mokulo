@@ -227,18 +227,10 @@ pub async fn check_for_reorg_and_reconcile(
                     dirty_orders.insert(payment.order_id.clone());
                 }
                 TxLocation::NotFound => {
-                    let key_images: Vec<String> =
-                        serde_json::from_str(&payment.key_images_json).unwrap_or_default();
-                    let statuses = daemon.is_key_image_spent(&key_images).await?;
-                    let proven_double_spend = statuses.contains(&KeyImageStatus::SpentInBlockchain);
-                    if proven_double_spend {
-                        let s = store.lock().unwrap();
-                        void_and_notify(&s, &payment.order_id, &payment.txid, payment.output_index, height, now)?;
+                    if void_if_double_spend_proven(store, daemon, &payment, height, now).await? {
                         dirty_orders.insert(payment.order_id.clone());
                         double_spent_orders.insert(payment.order_id.clone());
                     }
-                    // else: still ambiguous (still propagating, or a re-check will
-                    // catch it next tick) - never void on this evidence alone.
                 }
             }
         }
@@ -432,21 +424,16 @@ pub async fn check_vanished_mempool_payments(
             // stale). Nothing to conclude either way.
             TxLocation::InPool => {}
             TxLocation::NotFound => {
-                let key_images: Vec<String> =
-                    serde_json::from_str(&payment.key_images_json).unwrap_or_default();
-                let statuses = daemon.is_key_image_spent(&key_images).await?;
-                if statuses.contains(&KeyImageStatus::SpentInBlockchain) {
-                    let s = store.lock().unwrap();
-                    void_and_notify(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now)?;
+                // Dropped, evicted, still-propagating, and genuinely double-spent
+                // transactions are all indistinguishable from here except by their key
+                // images - `void_if_double_spend_proven` is where that's resolved, the
+                // same way `check_for_reorg_and_reconcile` resolves the identical
+                // question. Voiding on anything less would write off a payment the
+                // customer really made.
+                if void_if_double_spend_proven(store, daemon, &payment, current_height, now).await? {
                     dirty_orders.insert(payment.order_id.clone());
                     double_spent_orders.insert(payment.order_id.clone());
                 }
-                // else: gone from the pool with its inputs still unspent, or spent
-                // only by something else *in* the pool - which proves nothing, since
-                // a pooled transaction can still be dropped. Dropped, evicted and
-                // still-propagating transactions all land here, and all are left
-                // exactly as they are for a later tick to resolve. Voiding on this
-                // evidence would write off a payment the customer really made.
             }
         }
     }
@@ -527,6 +514,39 @@ fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64
         enqueue_webhook_event(store, order_id, &format!("order.{new_status}"), &payload, now)?;
     }
     Ok(())
+}
+
+/// Checks whether `payment`'s own key images prove a double-spend and, if so, voids
+/// it (see `void_and_notify`) and reports that it did.
+///
+/// Shared by `check_for_reorg_and_reconcile` and `check_vanished_mempool_payments`,
+/// whose "this payment's transaction is nowhere to be found" case both resolve
+/// identically: never void on absence alone, only on an affirmative
+/// `SpentInBlockchain` for one of the payment's own key images (§DESIGN.md 7.5). One
+/// copy of that evidence rule, not two that could quietly drift apart under a future
+/// edit to just one of them.
+///
+/// Takes `&SharedStore` rather than an already-held `&Store`, and does the daemon
+/// call *before* acquiring the lock, for the same reason every other lock hold in
+/// this file is kept brief: `is_key_image_spent` is network I/O, and nothing may
+/// `.await` while holding the store mutex.
+async fn void_if_double_spend_proven(
+    store: &crate::store::SharedStore,
+    daemon: &dyn MoneroDaemonClient,
+    payment: &crate::store::OrderPaymentRow,
+    current_height: u64,
+    now: i64,
+) -> Result<bool> {
+    let key_images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap_or_default();
+    let statuses = daemon.is_key_image_spent(&key_images).await?;
+    if !statuses.contains(&KeyImageStatus::SpentInBlockchain) {
+        // Still ambiguous (still propagating, or a re-check will catch it next tick)
+        // - never void on this evidence alone.
+        return Ok(false);
+    }
+    let s = store.lock().unwrap();
+    void_and_notify(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now)?;
+    Ok(true)
 }
 
 /// Voids a payment proven double-spent and, in the *same transaction*, records every

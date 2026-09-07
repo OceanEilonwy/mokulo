@@ -206,15 +206,25 @@ fn short_txid(txid: &str) -> String {
 /// parser turns it into visible/garbled markup rather than a processing
 /// instruction. Stripping down to the `<svg ...>` tag itself is what actually
 /// embeds cleanly.
+///
+/// Also stamps the tag as decorative for assistive technology: the address text
+/// rendered right alongside this QR code on the checkout page already carries
+/// everything it encodes, in a form a screen reader can actually read and a
+/// customer can copy - so the graphic itself is `aria-hidden`, not announced as an
+/// unlabeled image (an SVG has no `alt`; `role="presentation"` plus
+/// `aria-hidden="true"` is the documented equivalent). `focusable="false"` guards
+/// against Internet Explorer/legacy Edge's default of making any inline SVG its own
+/// tab stop even when it carries no other interactive semantics.
 fn qr_svg_for_html(data: &str) -> Result<String, ApiError> {
     let full = QrCode::new(data.as_bytes())
         .map_err(|e| ApiError::Internal(format!("failed to encode QR code: {e}")))?
         .render::<svg::Color>()
         .build();
-    match full.find("<svg") {
-        Some(idx) => Ok(full[idx..].to_string()),
-        None => Ok(full),
-    }
+    let svg = match full.find("<svg") {
+        Some(idx) => &full[idx..],
+        None => &full[..],
+    };
+    Ok(svg.replacen("<svg", r#"<svg role="presentation" aria-hidden="true" focusable="false""#, 1))
 }
 
 /// The public, unauthenticated checkout page (`docs/DESIGN.md` §14). Like

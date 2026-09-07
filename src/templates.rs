@@ -300,4 +300,114 @@ mod tests {
         assert_eq!(status_label("paid"), ("Paid".to_string(), "status-paid", true));
         assert_eq!(status_label("expired"), ("Expired".to_string(), "status-expired", true));
     }
+
+    // -- Accessibility: WAI-ARIA structure and WCAG contrast --------------------
+
+    #[test]
+    fn the_page_has_exactly_one_heading_naming_its_purpose() {
+        // WCAG 2.4.2 (Page Titled) / 1.3.1 (Info and Relationships): a screen reader
+        // user navigating by headings must land on something that says what this
+        // page is for, not silence - the original template had no heading at all.
+        let engine = TemplateEngine::new(None).unwrap();
+        let html = engine.render_checkout(&sample_view_model()).unwrap();
+        assert_eq!(html.matches("<h1").count(), 1, "exactly one h1: {html}");
+        assert!(html.contains("Monero payment"), "the h1 should name the page's purpose");
+    }
+
+    #[test]
+    fn the_status_badge_is_a_status_live_region() {
+        // role="status" carries an implicit aria-live="polite" - what makes a status
+        // change announced to assistive tech without needing a full page reload.
+        // aria-atomic is repeated explicitly per WCAG technique ARIA22's own
+        // compatibility note, since role=status's implicit default isn't honored
+        // consistently across assistive tech.
+        let engine = TemplateEngine::new(None).unwrap();
+        let html = engine.render_checkout(&sample_view_model()).unwrap();
+        assert!(html.contains(r#"role="status""#));
+        assert!(html.contains(r#"aria-atomic="true""#));
+    }
+
+    #[test]
+    fn the_double_spend_banner_is_an_assertive_alert() {
+        // Distinct from the status badge's role="status": a reversed payment is
+        // urgent, not routine, so it gets the interrupting role - see
+        // `double_spend_banner_only_renders_when_the_field_is_set` for the
+        // presence/absence half of this behavior.
+        let engine = TemplateEngine::new(None).unwrap();
+        let mut with_ds = sample_view_model();
+        with_ds.double_spend_detected_at = Some(1_700_000_000);
+        let html = engine.render_checkout(&with_ds).unwrap();
+        assert!(html.contains(r#"id="double-spend-banner" class="double-spend-banner" role="alert""#));
+    }
+
+    #[test]
+    fn the_confirmation_progress_bar_carries_a_complete_and_correct_aria_value_set() {
+        // A `role="progressbar"` with no value attributes announces as "0%" or
+        // nothing useful to a screen reader regardless of what it looks like
+        // visually - every one of these four attributes is required for it to mean
+        // anything (see the WAI-ARIA APG progressbar pattern). Asserts the *values*
+        // track the view model, not just that the attribute names are present.
+        let engine = TemplateEngine::new(None).unwrap();
+        let mut model = sample_view_model();
+        model.confirmations = 3;
+        model.confirmations_required = 10;
+        let html = engine.render_checkout(&model).unwrap();
+        assert!(html.contains(r#"role="progressbar""#));
+        assert!(html.contains(r#"aria-labelledby="confirmations-label""#));
+        assert!(html.contains(r#"aria-valuemin="0""#));
+        assert!(html.contains(r#"aria-valuemax="10""#));
+        assert!(html.contains(r#"aria-valuenow="3""#));
+        assert!(html.contains(r#"aria-valuetext="3 of 10 confirmations""#));
+    }
+
+    #[test]
+    fn the_qr_code_is_decorative_and_hidden_from_assistive_tech() {
+        // The template trusts whatever `qr_code_svg` it's handed to already carry
+        // this marking (the real generator, `http::public::qr_svg_for_html`, is
+        // covered separately in `http::tests`) - this pins that the template
+        // doesn't strip or override it on the way to the page.
+        let engine = TemplateEngine::new(None).unwrap();
+        let mut model = sample_view_model();
+        model.qr_code_svg = r#"<svg role="presentation" aria-hidden="true" focusable="false" viewBox="0 0 1 1"></svg>"#.to_string();
+        let html = engine.render_checkout(&model).unwrap();
+        assert!(html.contains(r#"aria-hidden="true""#));
+    }
+
+    #[test]
+    fn the_payments_table_has_a_caption_and_scoped_column_headers() {
+        // Without `scope="col"`, a screen reader reading down a data cell can't say
+        // which column it's in; without a caption, entering the table announces
+        // nothing about what it contains.
+        let engine = TemplateEngine::new(None).unwrap();
+        let mut model = sample_view_model();
+        model.payments = vec![PaymentViewModel {
+            txid_short: "abcd1234…ef5678".to_string(),
+            amount_xmr: "0.100000000000".to_string(),
+            confirmations: 5,
+            is_zero_conf: false,
+        }];
+        let html = engine.render_checkout(&model).unwrap();
+        assert!(html.contains("<caption"));
+        assert_eq!(html.matches(r#"<th scope="col">"#).count(), 3, "all three column headers: {html}");
+    }
+
+    #[test]
+    fn status_badge_colors_meet_wcag_aa_contrast_against_white_text() {
+        // Computed against the WCAG 2.x relative-luminance formula: the original
+        // palette's "confirming", "paid", and "partial" colors were 3.19:1, 3.30:1,
+        // and 3.56:1 against white text - all below the 4.5:1 AA minimum for
+        // non-large text, on precisely the three statuses a customer most needs to
+        // read correctly. This can't practically assert the *rendered* contrast,
+        // but it pins the corrected hex values against the specific regression of
+        // someone reverting to the more "obvious" shade of each color, which is
+        // exactly how they ended up wrong the first time.
+        let engine = TemplateEngine::new(None).unwrap();
+        let html = engine.render_checkout(&sample_view_model()).unwrap();
+        for passing_color in ["#b45309", "#15803d", "#c2410c"] {
+            assert!(html.contains(passing_color), "missing {passing_color}: contrast-failing color may have been reintroduced");
+        }
+        for failing_color in ["#d97706", "#16a34a", "#ea580c"] {
+            assert!(!html.contains(failing_color), "found {failing_color}: this shade fails WCAG AA contrast against white text");
+        }
+    }
 }

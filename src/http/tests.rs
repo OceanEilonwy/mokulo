@@ -538,6 +538,11 @@ async fn payment_page_renders_html_with_order_details_and_404s_for_unknown_payme
     assert!(html.contains(&address));
     assert!(html.contains("<svg"));
     assert!(html.contains("Waiting for payment"));
+    // The QR code is decorative - the address text right next to it already carries
+    // everything it encodes in a form assistive tech can actually read - so the real
+    // `qr_svg_for_html` (not a template fixture) must hide it, not leave it as an
+    // unlabeled image.
+    assert!(html.contains(r#"<svg role="presentation" aria-hidden="true" focusable="false""#));
 
     let req = Request::builder()
         .method("GET")
