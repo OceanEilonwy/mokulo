@@ -900,10 +900,10 @@ mod tests {
 
     // -- end-to-end wizard runs -----------------------------------------------
 
-    /// Answers in order: mode(simple)=Enter, node choice=1 (curated #1), wallet=no,
-    /// exchange rate=yes/USD/150, final confirm=yes.
+    /// Answers in order: mode(simple)=Enter, node choice=1 (curated #1), test node
+    /// connection=no, wallet=no, exchange rate=yes/USD/150, final confirm=yes.
     fn simple_mainnet_script() -> String {
-        "\n1\nn\ny\nUSD\n150\ny\n".to_string()
+        "\n1\nn\nn\ny\nUSD\n150\ny\n".to_string()
     }
 
     #[tokio::test]
@@ -933,9 +933,12 @@ mod tests {
         let path = temp_config_path("exhaustive");
         // Advanced mode this time, so every section actually gets walked and every
         // field name is exercised by the wizard itself, not just present via a
-        // default render.
-        let script = "2\n1\nn\ny\nUSD\n150\n\n\n\n\n\n\n\n\n\n\ny\n";
-        let (outcome, _) = run(script, Network::Mainnet, &path).await;
+        // default render. mode=2(advanced), node=1, test node connection=n, wallet=n,
+        // rate=y/USD/150, then 11 blank (default) answers through every advanced-mode
+        // field (confirmations, zero_conf, expiry, reorg, poll, bind, rate_limit,
+        // max_body, allow_private, timeout, max_attempts), final=y.
+        let script = format!("2\n1\nn\nn\ny\nUSD\n150\n{}y\n", "\n".repeat(11));
+        let (outcome, _) = run(&script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
 
         let rendered = std::fs::read_to_string(&path).unwrap();
@@ -957,13 +960,14 @@ mod tests {
         let path = temp_config_path("advanced");
         // mode=2(advanced), node=3(mainnet's curated list has 2 entries, so
         // "custom" is choice 3: host/port/ssl=n/self-signed=n),
-        // wallet=n, rate (exchange_rates starts empty so this is a one-shot
-        // "add one now?" prompt, not the advanced-mode add-another loop): y/EUR/200,
+        // test node connection=n, wallet=n, rate (exchange_rates starts empty so this
+        // is a one-shot "add one now?" prompt, not the advanced-mode add-another
+        // loop): y/EUR/200,
         // payment: confirmations=5, zero_conf=0.1, expiry=45, reorg=30, poll=2000,
         // server: bind=127.0.0.1:9999, rate_limit=99, max_body=4096,
         // webhooks: allow_private=y, timeout=1234, attempts=3,
         // final confirm=y
-        let script = "2\n3\nnode.example.org\n18081\nn\nn\nn\ny\nEUR\n200\n5\n0.1\n45\n30\n2000\n127.0.0.1:9999\n99\n4096\ny\n1234\n3\ny\n";
+        let script = "2\n3\nnode.example.org\n18081\nn\nn\nn\nn\ny\nEUR\n200\n5\n0.1\n45\n30\n2000\n127.0.0.1:9999\n99\n4096\ny\n1234\n3\ny\n";
         let (outcome, _) = run(script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
 
@@ -993,10 +997,10 @@ mod tests {
         let after_first = std::fs::read_to_string(&path).unwrap();
         assert!(after_first.contains("node.moneroworld.com"));
 
-        // Second run targets stagenet: mode(simple), node choice=1, wallet=no (none
-        // exists yet), exchange rate already configured + not advanced so no
-        // re-prompt, final confirm=yes.
-        let script = "\n1\nn\ny\n";
+        // Second run targets stagenet: mode(simple), node choice=1, test node
+        // connection=no, wallet=no (none exists yet), exchange rate already
+        // configured + not advanced so no re-prompt, final confirm=yes.
+        let script = "\n1\nn\nn\ny\n";
         let (outcome, transcript) = run(script, Network::Stagenet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
         assert!(transcript.contains("mainnet"), "should have announced the existing network: {transcript}");
@@ -1018,8 +1022,9 @@ mod tests {
         run(&simple_mainnet_script(), Network::Mainnet, &path).await;
 
         // mode(simple), node choice=2 (the second curated mainnet entry this time),
-        // wallet stays declined, no new rate needed, confirm=yes.
-        let script = "\n2\nn\ny\n";
+        // test node connection=no, wallet stays declined, no new rate needed,
+        // confirm=yes.
+        let script = "\n2\nn\nn\ny\n";
         run(script, Network::Mainnet, &path).await;
 
         let config = Config::from_file(path.to_str().unwrap()).unwrap();
@@ -1031,7 +1036,7 @@ mod tests {
     #[tokio::test]
     async fn declining_the_final_confirmation_writes_nothing() {
         let path = temp_config_path("declined");
-        let script = "\n1\nn\ny\nUSD\n150\nn\n"; // final answer: n
+        let script = "\n1\nn\nn\ny\nUSD\n150\nn\n"; // final answer: n
         let (outcome, _) = run(script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Cancelled));
         assert!(!path.exists());
@@ -1043,7 +1048,7 @@ mod tests {
         run(&simple_mainnet_script(), Network::Mainnet, &path).await;
         let before = std::fs::read_to_string(&path).unwrap();
 
-        let script = "\n1\nn\nn\n"; // node=1, wallet=n, (rates already configured + simple mode = no rate prompt), final=n
+        let script = "\n1\nn\nn\nn\n"; // node=1, test node connection=n, wallet=n, (rates already configured + simple mode = no rate prompt), final=n
         let (outcome, _) = run(script, Network::Stagenet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Cancelled));
 
@@ -1080,14 +1085,18 @@ mod tests {
     #[tokio::test]
     async fn an_existing_wallet_section_is_offered_to_keep_and_is_preserved_when_kept() {
         let path = temp_config_path("wallet-kept");
-        // First run: configure mainnet with a wallet.
-        let script = "\n1\ny\n4abc\nviewkeyhex\nspendkeyhex\nmainnet\nhttps://merchant.example\ny\nUSD\n150\ny\n";
+        // First run: configure mainnet with a wallet. mode(simple), node=1, test
+        // node connection=n, wallet configure(none existing)=y, then wallet fields,
+        // rate=y/USD/150, final=y.
+        let script = "\n1\nn\ny\n4abc\nviewkeyhex\nspendkeyhex\nmainnet\nhttps://merchant.example\ny\nUSD\n150\ny\n";
         run(script, Network::Mainnet, &path).await;
         let config = Config::from_file(path.to_str().unwrap()).unwrap();
         assert!(config.wallet.is_some());
 
-        // Second run for stagenet: keep the existing wallet as-is.
-        let script2 = "\n1\ny\ny\n"; // node=1, keep wallet=y, final=y
+        // Second run for stagenet: keep the existing wallet as-is. node=1, test node
+        // connection=n, then the wallet choice is now a 3-way `prompt_choice` -
+        // "1" (or blank) selects "Keep it as it is" - final=y.
+        let script2 = "\n1\nn\n1\ny\n";
         run(script2, Network::Stagenet, &path).await;
         let config2 = Config::from_file(path.to_str().unwrap()).unwrap();
         let wallet = config2.wallet.unwrap();
@@ -1099,8 +1108,10 @@ mod tests {
     #[tokio::test]
     async fn wallet_network_must_be_one_of_the_configured_networks() {
         let path = temp_config_path("wallet-bad-network");
-        // Try "testnet" (not configured) first, get rejected, then "mainnet".
-        let script = "\n1\ny\n4abc\nviewkeyhex\nspendkeyhex\ntestnet\nmainnet\n\ny\nUSD\n150\ny\n";
+        // mode(simple), node=1, test node connection=n, wallet configure=y, then
+        // wallet fields: try "testnet" (not configured) first, get rejected, then
+        // "mainnet", origins=blank, rate=y/USD/150, final=y.
+        let script = "\n1\nn\ny\n4abc\nviewkeyhex\nspendkeyhex\ntestnet\nmainnet\n\ny\nUSD\n150\ny\n";
         let (outcome, transcript) = run(script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
         assert!(transcript.contains("isn't configured yet"));
@@ -1113,7 +1124,9 @@ mod tests {
     async fn custom_node_entry_is_used_verbatim() {
         let path = temp_config_path("custom-node");
         // Mainnet's curated list has 2 entries, so "custom" is choice 3.
-        let script = "\n3\nnode.mine.example\n18089\ny\nn\nn\ny\nUSD\n150\ny\n";
+        // host/port/ssl=y/self-signed=n, test node connection=n, wallet=n,
+        // rate=y/USD/150, final=y.
+        let script = "\n3\nnode.mine.example\n18089\ny\nn\nn\nn\ny\nUSD\n150\ny\n";
         run(script, Network::Mainnet, &path).await;
         let config = Config::from_file(path.to_str().unwrap()).unwrap();
         let node = config.monero_node.get(Network::Mainnet).unwrap();
@@ -1127,7 +1140,7 @@ mod tests {
     #[tokio::test]
     async fn declining_the_exchange_rate_prompt_still_leaves_documented_syntax_in_the_file() {
         let path = temp_config_path("no-rate");
-        let script = "\n1\nn\nn\ny\n"; // node=1, wallet=n, add rate=n, confirm=y
+        let script = "\n1\nn\nn\nn\ny\n"; // node=1, test node connection=n, wallet=n, add rate=n, confirm=y
         let (outcome, _) = run(script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
         let rendered = std::fs::read_to_string(&path).unwrap();

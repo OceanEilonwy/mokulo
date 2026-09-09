@@ -66,6 +66,12 @@ would reintroduce them:
   Monero consensus economics, not something application code should try to override.
 - **TEE-backed `KeyCustody` implementation.** The boundary is built to make this a
   drop-in backend later (§6), but v1 ships only the plaintext `PlainKeyCustody`.
+- **Generating Monero wallets on the operator's behalf.** `--init` (§4.1) walks a
+  self-hoster through *entering* their existing wallet's view/spend keys, never
+  through creating a new wallet — this project has no reason to touch spend-key
+  material, and a self-hoster is assumed to already have (or know how to make,
+  with `monero-wallet-cli` or any other wallet software) the wallet they want to
+  receive into.
 
 ## 4. Deployment Model
 
@@ -79,6 +85,35 @@ difference is how many rows exist in `tenants`:
 - **Hosted, multi-tenant.** Tenants are created at runtime via the admin API, each
   bringing their own watch-only wallet. New tenants must be scannable without a
   restart (§7.3).
+
+### 4.1 Onboarding tooling
+
+`moneropay-core --init` (optionally `--stagenet`/`--testnet`, `--config <path>`) is
+an interactive wizard that produces or merges `moneropay.toml` — curated node
+choice with a live "test this connection now" check, the `[wallet]` bootstrap
+walked through field by field (or, on a re-run against an existing bootstrap,
+offered as keep-as-is / add an allowed origin / replace entirely), and a rendered
+file with every setting present, active or commented with its default. It
+deliberately does not generate wallet key material — a self-hoster brings their
+own existing wallet (§3, non-goals).
+
+Three further flags (`--rotate-secret`, `--show-tenant`, `--snippet`, each taking
+`--config` and, for a hosted instance with more than one tenant, `--pk`) operate
+directly on the local SQLite file rather than through the HTTP admin API in §10 —
+justified by the same reasoning as §6.3's local-file `PlainKeyCustody`: filesystem
+access to the box already implies more trust than any `sk_` could grant, and this
+is a single-operator, self-hosted tool, not a service with a separate admin role
+to keep out. `--snippet` in particular exists to close the onboarding gap of
+turning a freshly bootstrapped tenant into a pasteable "Pay with Monero" button —
+it prints a ready-to-embed HTML/JS block pre-filled with the tenant's real `pk_`
+and an operator-supplied endpoint URL (never derived from `[server].bind`, which
+says nothing about the externally-reachable URL once a reverse proxy sits in
+front of it).
+
+The database always lives next to whichever config file was actually used
+(`moneropay.db` in the config's own directory, not the process's CWD) so these
+commands, and the server itself, reliably agree on which file they mean
+regardless of the directory `moneropay-core` happens to be launched from.
 
 ## 5. High-Level Architecture
 
