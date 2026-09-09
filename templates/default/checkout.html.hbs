@@ -319,7 +319,20 @@
   var lastConfirmations = {{confirmations}};
 
   function poll() {
-    fetch(statusUrl).then(function (r) { return r.json(); }).then(function (data) {
+    fetch(statusUrl).then(function (r) {
+      // A non-2xx response (429 from the per-IP rate limit is the realistic one -
+      // this loop polls every 3s on its own, and any other traffic from the same
+      // IP/NAT stacks on top of it - but any transient 5xx too) still has a JSON
+      // body (`{"error": "..."}`), so `.json()` alone would "succeed" with
+      // `data.status` simply `undefined`. That used to compare unequal to the real
+      // `lastStatus` string and get read as a genuine transition, reloading the
+      // page - which can itself land on the very same error if the server is
+      // still rate-limited, replacing the checkout UI with a raw JSON error
+      // page. Checking `r.ok` first routes any non-2xx into the same catch/retry
+      // path as a network failure, never into the "this looks like a status" path.
+      if (!r.ok) { throw new Error('status check failed: ' + r.status); }
+      return r.json();
+    }).then(function (data) {
       // Only touch the DOM - and therefore only let the aria-live region on
       // .progress-row announce anything - when the confirmation count actually
       // changed. Unconditionally re-setting identical text every 3 seconds would

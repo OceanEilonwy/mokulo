@@ -410,4 +410,19 @@ mod tests {
             assert!(!html.contains(failing_color), "found {failing_color}: this shade fails WCAG AA contrast against white text");
         }
     }
+
+    #[test]
+    fn the_poll_loop_checks_response_ok_before_reading_a_status() {
+        // Regression pin, not a behavioral test - there's no JS harness in this
+        // repo (see e2e/README.md), so this can only assert the fix's source is
+        // present, not exercise it. Verified live instead: a real 429 from the
+        // per-IP rate limiter used to read as a status transition (the error
+        // body's `data.status` is `undefined`, which compares unequal to the real
+        // `lastStatus` string) and reload the page - sometimes landing on the very
+        // same rate-limit error as a raw JSON page in place of the checkout UI,
+        // observed against a live server before this fix.
+        let engine = TemplateEngine::new(None).unwrap();
+        let html = engine.render_checkout(&sample_view_model()).unwrap();
+        assert!(html.contains("if (!r.ok)"), "poll() must reject a non-2xx response before treating its body as a status: {html}");
+    }
 }

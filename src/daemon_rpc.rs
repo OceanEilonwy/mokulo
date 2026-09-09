@@ -84,7 +84,20 @@ impl RpcDaemonClient {
                 return Err(DaemonError::Request(format!("daemon returned status {status} from {path}")));
             }
         }
-        serde_json::from_value(value).map_err(|e| DaemonError::Request(format!("failed to parse response from {path}: {e}")))
+        // A field-shape mismatch here means the response was valid JSON but didn't
+        // match what this client expects - a different node/version genuinely
+        // shaping a response differently (see `GetTransactionPoolResponse`'s own
+        // note), not a network problem. Including a snippet of the actual body in
+        // the error is what makes that diagnosable from the error message alone,
+        // rather than needing to reproduce it with a packet capture.
+        serde_json::from_value(value.clone()).map_err(|e| {
+            let full = value.to_string();
+            // `String` slicing panics off a char boundary; `char_indices` finds the
+            // nearest safe cut at or before 500 bytes rather than assuming ASCII.
+            let cut = full.char_indices().map(|(i, _)| i).take_while(|&i| i <= 500).last().unwrap_or(0);
+            let snippet = if full.len() > cut { format!("{}…", &full[..cut]) } else { full };
+            DaemonError::Request(format!("failed to parse response from {path}: {e}\nresponse body was: {snippet}"))
+        })
     }
 
     async fn fetch_transactions(&self, hashes: &[String]) -> Result<Vec<Transaction>, DaemonError> {
@@ -241,16 +254,33 @@ fn decode_tx_hex(hex_str: &str) -> Result<Transaction, DaemonError> {
     deserialize(&bytes).map_err(|e| DaemonError::Request(format!("failed to parse transaction blob: {e}")))
 }
 
+/// Matches `COMMAND_RPC_GET_HEIGHT::response_t`: `uint64_t height`, plain
+/// `KV_SERIALIZE` (always present). The real struct also always-serializes a
+/// `hash` field (the tip block's hash) this client doesn't read, since
+/// `get_block_hash` fetches it separately when needed - no correctness
+/// implication, just unused.
 #[derive(Deserialize)]
 struct GetHeightResponse {
     height: u64,
 }
 
+/// Matches `block_header_response`'s `hash` field: `std::string hash`, plain
+/// `KV_SERIALIZE` (always present). The real struct carries ~20 more always-present
+/// fields (`height`, `difficulty`, `timestamp`, `reward`, ...) nothing here reads.
 #[derive(Deserialize)]
 struct BlockHeader {
     hash: String,
 }
 
+/// Matches `COMMAND_RPC_GET_BLOCK::response_t`: `block_header` and `tx_hashes` are
+/// both declared plain `KV_SERIALIZE` in the C++ source (not `_OPT`) - but
+/// `#[serde(default)]` on `tx_hashes` is deliberately kept anyway. A block with no
+/// non-coinbase transactions (the empty case) has been observed, live, to omit the
+/// key rather than send `[]` despite the plain (non-`_OPT`) declaration - the same
+/// gap between "the C++ struct says always-serialize" and "what actually arrives
+/// on the wire" that `GetTransactionPoolResponse::transactions` below was found to
+/// have too. Trusting the struct declaration alone here would reintroduce exactly
+/// that bug for a block instead of the mempool.
 #[derive(Deserialize)]
 struct GetBlockResult {
     block_header: BlockHeader,
@@ -260,9 +290,30 @@ struct GetBlockResult {
 
 #[derive(Deserialize)]
 struct GetTransactionPoolResponse {
+    // An empty mempool can come back with this key omitted entirely rather than
+    // present as `[]` (observed live against a real public testnet node - the same
+    // class of quirk `GetBlockResult::tx_hashes` above already works around).
+    // Without `#[serde(default)]`, every poll of a genuinely empty mempool fails to
+    // parse at all, which turns "no pending zero-conf payments" into "zero-conf
+    // detection is silently broken on this node until something changes the
+    // mempool" - a much worse failure mode than the one line this guards against.
+    //
+    // `COMMAND_RPC_GET_TRANSACTION_POOL::response_t` declares this plain
+    // `KV_SERIALIZE(transactions)` in the C++ source too (not `_OPT`) - the struct
+    // declaration alone doesn't predict whether a field can be omitted on the
+    // wire, which is the whole reason every vector-typed field in this file now
+    // gets `#[serde(default)]` rather than trusting each one's declaration
+    // individually.
+    #[serde(default)]
     transactions: Vec<PoolTx>,
 }
 
+/// Matches `tx_info::tx_blob`: `std::string tx_blob`, plain `KV_SERIALIZE`, always
+/// present *within* an already-present pool entry (unlike the outer `transactions`
+/// array, a `tx_info` element that exists at all reliably carries its own
+/// `tx_blob` - no further defensiveness needed on a scalar field one level in).
+/// The real struct has ~15 more always-present fields (`fee`, `weight`,
+/// `receive_time`, `double_spend_seen`, ...) unused here.
 #[derive(Deserialize)]
 struct PoolTx {
     tx_blob: String,
@@ -275,6 +326,23 @@ struct GetTransactionsResponse {
     missed_tx: Vec<String>,
 }
 
+/// Verified field-by-field against `monero-project/monero`'s own
+/// `src/rpc/core_rpc_server_commands_defs.h` (`COMMAND_RPC_GET_TRANSACTIONS::entry`),
+/// not assumed. Real name/type kept exactly where used (`as_hex: std::string`,
+/// `in_pool: bool`, both plain `KV_SERIALIZE` - always present); the real struct
+/// also always-serializes `tx_hash`, `pruned_as_hex`, `double_spend_seen`, and
+/// several more fields this client has no use for, which is fine - serde ignores
+/// unknown fields by default, so a struct only needs to *name* what it reads.
+///
+/// `block_height` is the one field here worth a real note: the real struct's
+/// `KV_SERIALIZE_MAP` wraps it in `if (!this_ref.in_pool) { KV_SERIALIZE(block_height)
+/// ... } else { KV_SERIALIZE(relayed) ... }` - it is a *conditionally-serialized*
+/// field, entirely absent from the JSON (not `null`) whenever a transaction is
+/// still in the mempool. `Option<u64>` is correct as-is for this, with no
+/// `#[serde(default)]` needed: serde's derive has a documented special case for
+/// fields of type exactly `Option<T>` - a missing key deserializes to `None`
+/// automatically, independent of `#[serde(default)]`. Pinned, not just asserted,
+/// by `an_in_pool_entry_with_no_block_height_key_at_all_deserializes_as_none` below.
 #[derive(Deserialize)]
 struct TxEntry {
     as_hex: String,
@@ -282,9 +350,23 @@ struct TxEntry {
     block_height: Option<u64>,
 }
 
+/// The real field is `std::vector<int> spent_status` (`COMMAND_RPC_IS_KEY_IMAGE_SPENT::response_t`) -
+/// a signed 32-bit C++ `int`, not the `u8` this held until this was checked against
+/// source. `Vec<u8>` still parsed every status code monerod is documented to
+/// actually send (0/1/2), so this wasn't reachable in practice - but it meant any
+/// out-of-range value (negative, or >255) would fail deserialization outright
+/// before ever reaching `is_key_image_spent`'s own `_ => Unspent` catch-all, which
+/// exists specifically to degrade unrecognized codes safely rather than error.
+/// `#[serde(default)]` added for consistency with `GetTransactionPoolResponse`
+/// above, even though the only caller never sends an empty request (so an empty,
+/// possibly-omitted response is not currently reachable) - cheap insurance against
+/// the same class of bug recurring here, since the underlying "an empty vector
+/// field may be omitted from the wire rather than sent as `[]`" behavior has
+/// already been observed live for a structurally identical field.
 #[derive(Deserialize)]
 struct IsKeyImageSpentResponse {
-    spent_status: Vec<u8>,
+    #[serde(default)]
+    spent_status: Vec<i32>,
 }
 
 #[async_trait::async_trait]
@@ -374,6 +456,28 @@ mod tests {
 
     fn entry(as_hex: &str) -> TxEntry {
         TxEntry { as_hex: as_hex.to_string(), in_pool: false, block_height: Some(1) }
+    }
+
+    #[test]
+    fn an_empty_mempool_response_omitting_the_transactions_key_entirely_parses_as_empty_not_an_error() {
+        // Reported live against a real public testnet node: an empty pool came back
+        // as `{"status":"OK",...}` with no "transactions" key at all, rather than
+        // `"transactions": []` - and without `#[serde(default)]` that's a hard parse
+        // error on *every* poll of a genuinely empty mempool, not a one-off. This
+        // pins the fix directly against the response shape that broke, without
+        // needing a live node or an HTTP mock.
+        let resp: GetTransactionPoolResponse = serde_json::from_str(r#"{"status":"OK","untrusted":false}"#).unwrap();
+        assert!(resp.transactions.is_empty());
+        assert!(decode_pool_best_effort(&resp.transactions).is_empty());
+
+        // The ordinary shape - an explicit empty array - still works too.
+        let resp: GetTransactionPoolResponse = serde_json::from_str(r#"{"status":"OK","transactions":[]}"#).unwrap();
+        assert!(resp.transactions.is_empty());
+
+        // And a real entry still deserializes correctly alongside the fix.
+        let resp: GetTransactionPoolResponse =
+            serde_json::from_str(&format!(r#"{{"status":"OK","transactions":[{{"tx_blob":"{FIXTURE_TX_HEX}"}}]}}"#)).unwrap();
+        assert_eq!(decode_pool_best_effort(&resp.transactions).len(), 1);
     }
 
     #[test]
@@ -583,6 +687,41 @@ mod tests {
             serde_json::from_value(json!({ "as_hex": "ab", "in_pool": true, "block_height": null }))
                 .unwrap();
         assert!(pool.in_pool && pool.block_height.is_none());
+    }
+
+    #[test]
+    fn an_in_pool_entry_with_no_block_height_key_at_all_deserializes_as_none() {
+        // Distinct from the `block_height: null` case above, and the one that
+        // actually matters: per `COMMAND_RPC_GET_TRANSACTIONS::entry`'s own
+        // `KV_SERIALIZE_MAP` in monero-project/monero's source, `block_height` sits
+        // inside `if (!this_ref.in_pool) { KV_SERIALIZE(block_height) ... }` - a
+        // transaction still in the mempool never has this *key* in the response at
+        // all, not a key present with a JSON `null`. Verifies serde's documented
+        // behavior for `Option<T>` fields (defaults to `None` when the key is
+        // missing, with no `#[serde(default)]` needed) actually holds here, rather
+        // than trusting that behavior from memory.
+        let entry: TxEntry = serde_json::from_value(json!({ "as_hex": "ab", "in_pool": true })).unwrap();
+        assert!(entry.in_pool);
+        assert!(entry.block_height.is_none());
+    }
+
+    #[test]
+    fn spent_status_accepts_the_real_signed_int_type_and_an_absent_key() {
+        // The real field is `std::vector<int> spent_status` - a signed 32-bit C++
+        // int - not `u8`. A value outside 0-255 (or negative) used to fail
+        // deserialization outright, before `is_key_image_spent`'s own `_ =>
+        // Unspent` catch-all - meant to degrade unrecognized codes safely - ever
+        // got a chance to run. monerod is documented to only ever send 0/1/2 today,
+        // so this specific overflow was never observed live (unlike the two bugs
+        // above, both found from a real error message) - this is a type-fidelity
+        // fix caught by checking the source directly, not a reported failure.
+        let resp: IsKeyImageSpentResponse = serde_json::from_value(json!({ "spent_status": [0, 1, 2, -1, 300] })).unwrap();
+        assert_eq!(resp.spent_status, vec![0, 1, 2, -1, 300]);
+
+        // And, consistent with every other vector field in this file, an absent
+        // key parses as empty rather than a hard error.
+        let resp: IsKeyImageSpentResponse = serde_json::from_value(json!({ "status": "OK" })).unwrap();
+        assert!(resp.spent_status.is_empty());
     }
 }
 

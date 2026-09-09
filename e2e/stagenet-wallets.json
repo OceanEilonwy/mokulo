@@ -10,7 +10,8 @@
       "29e0f482f04ec0933bb39de1d8ea1b69e282a9877727ba949f8d5243b30f750d",
       "83ce190f60c240b76b27c6b8b39b0e840afdcd32a0ef9b06c7570c56a2a24ce6",
       "f6b4707fbf7b341bf1a4e74e81531d74d1e8326b9ffc5d0e648a5ecc2e8b35dc",
-      "11fa6db9b00c8d08d51ca521d0e9cc8f5e0832ec68710ad735db93babc841ac6"
+      "11fa6db9b00c8d08d51ca521d0e9cc8f5e0832ec68710ad735db93babc841ac6",
+      "ec5fb0139627786d7ee459ed7883ca992dabeaa798715c68e6a0e0f5ac6b9de6"
     ],
     "known_txids_comment": "Every txid that ever paid this wallet - the two original faucet payouts plus every test run's own tx (its change output pays the wallet again). tests/e2e_stagenet.rs scans all of these each run (skipping any not yet confirmed) and appends its own new tx here on success, so later runs automatically pick up earlier change without needing a fresh faucet payout every time.",
     "mnemonic": "affair cube ablaze cynical lurk gather arises last oatmeal guide sniff tufts lyrics wounded zigzags deftly tapestry tipsy pests ingested vain feast cottage duration wounded",

@@ -1,10 +1,13 @@
 pub mod auth;
+pub mod cli;
 pub mod config;
 pub mod daemon;
 pub mod daemon_rpc;
 pub mod exchange_rate;
 pub mod http;
+pub mod init_wizard;
 pub mod key_custody;
+pub mod local_admin;
 pub mod network;
 pub mod scanner;
 pub mod status;

@@ -8,44 +8,142 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use monero::Network;
+use moneropay_core::cli::{self, Action};
 use moneropay_core::config::Config;
 use moneropay_core::daemon::MoneroDaemonClient;
 use moneropay_core::daemon_rpc::RpcDaemonClient;
 use moneropay_core::exchange_rate::ExchangeRateProvider;
 use moneropay_core::http::rate_limit::RateLimiter;
 use moneropay_core::http::{build_router, now_unix, AppState};
+use moneropay_core::init_wizard;
 use moneropay_core::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, WalletMaterial};
+use moneropay_core::local_admin;
 use moneropay_core::network::network_str;
 use moneropay_core::scanner::run_scan_tick;
 use moneropay_core::store::{NewTenant, SharedStore, Store};
 use moneropay_core::webhook_delivery::run_delivery_tick;
 
-struct Args {
-    config_path: String,
-    /// `--strict-tls` on the command line overrides every configured node's
-    /// `accept_self_signed_certs` to `false` regardless of what the config file
-    /// says - see `MoneroNodeConfig` for why the default is `true`.
-    strict_tls: bool,
-}
-
-fn parse_args() -> Args {
-    let mut config_path = "moneropay.toml".to_string();
-    let mut strict_tls = false;
-    for arg in std::env::args().skip(1) {
-        if arg == "--strict-tls" {
-            strict_tls = true;
-        } else {
-            config_path = arg;
+/// All argv parsing lives in `moneropay_core::cli` (a lib module, unit-testable
+/// the normal way) - this function is just the untestable-by-nature glue that
+/// turns its result into process exit codes and side effects (stdin/stdout,
+/// running the wizard, `std::process::exit`). `async` only because
+/// `init_wizard::run_interactive` now makes a real network call when its "test
+/// this node" prompt is accepted; already fine to await here since `main` is
+/// itself async.
+async fn dispatch_args() -> (std::path::PathBuf, bool) {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    match cli::parse_args(&raw) {
+        Ok(Action::Help) => {
+            print!("{}", cli::HELP_TEXT);
+            std::process::exit(0);
+        }
+        Ok(Action::Init(init_args)) => {
+            let path = init_args.config_path_override.map(std::path::PathBuf::from).unwrap_or_else(init_wizard::default_config_path);
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let mut output = std::io::stdout();
+            match init_wizard::run_interactive(&mut input, &mut output, init_args.network, &path).await {
+                Ok(init_wizard::WizardOutcome::Written(_)) => std::process::exit(0),
+                Ok(init_wizard::WizardOutcome::Cancelled) => std::process::exit(1),
+                Err(e) => {
+                    eprintln!("setup wizard failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Ok(Action::RotateSecret { config_path, pk }) => {
+            let store = open_local_store(&config_path);
+            match local_admin::rotate_secret(&store, pk.as_deref()) {
+                Ok((pk, secret)) => {
+                    println!("Tenant: {pk}");
+                    println!("New secret: {secret}");
+                    println!("(shown once - store it now; the old secret no longer works)");
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Ok(Action::ShowTenant { config_path, pk }) => {
+            let store = open_local_store(&config_path);
+            match local_admin::show_tenant(&store, pk.as_deref()) {
+                Ok(s) => {
+                    println!("Public key:            {}", s.public_key);
+                    println!("Network:               {}", s.network);
+                    println!("Primary address:       {}", s.primary_address);
+                    println!(
+                        "Allowed origins:       {}",
+                        if s.allowed_origins.is_empty() { "(none configured)".to_string() } else { s.allowed_origins.join(", ") }
+                    );
+                    println!("Confirmations required: {}", s.confirmations_required);
+                    println!(
+                        "Zero-conf ceiling:     {}",
+                        s.zero_conf_max_piconero.map(|p| format!("{p} piconero")).unwrap_or_else(|| "(disabled)".to_string())
+                    );
+                    println!("Order expiry:          {} minutes", s.order_expiry_seconds / 60);
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Ok(Action::Snippet { config_path, pk, endpoint }) => {
+            let store = open_local_store(&config_path);
+            let endpoint = match endpoint {
+                Some(e) => e,
+                None => {
+                    let stdin = std::io::stdin();
+                    let mut input = stdin.lock();
+                    let mut output = std::io::stdout();
+                    init_wizard::prompt(
+                        &mut output,
+                        &mut input,
+                        "What URL will customers reach this server at? (through any reverse proxy/domain in front of it)",
+                        None,
+                    )
+                    .unwrap_or_default()
+                }
+            };
+            match local_admin::snippet(&store, pk.as_deref(), &endpoint) {
+                Ok(html) => {
+                    print!("{html}");
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Ok(Action::RunServer { config_path, strict_tls }) => (config_path, strict_tls),
+        Err(e) => {
+            eprintln!("{e}\n\nRun with --help for usage.");
+            std::process::exit(1);
         }
     }
-    Args { config_path, strict_tls }
+}
+
+/// Opens the database co-located with `config_path` (see
+/// `init_wizard::database_path_for`) for the local-admin commands, which need
+/// direct DB access and nothing else from the config file itself.
+fn open_local_store(config_path: &std::path::Path) -> Store {
+    let db_path = init_wizard::database_path_for(config_path);
+    Store::open_file(&db_path.to_string_lossy()).unwrap_or_else(|e| {
+        eprintln!("failed to open database at {}: {e}", db_path.display());
+        std::process::exit(1);
+    })
 }
 
 #[tokio::main]
 async fn main() {
-    let args = parse_args();
-    let config = Config::from_file(&args.config_path).unwrap_or_else(|e| {
-        eprintln!("failed to load config from {}: {e}", args.config_path);
+    let (config_path, strict_tls) = dispatch_args().await;
+    let config_path_display = config_path.display().to_string();
+    let config = Config::from_file(&config_path.to_string_lossy()).unwrap_or_else(|e| {
+        eprintln!("failed to load config from {config_path_display}: {e}");
         std::process::exit(1);
     });
     if let Err(e) = config.validate() {
@@ -53,7 +151,8 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let store = Store::open_file("moneropay.db").expect("failed to open database").into_shared();
+    let db_path = init_wizard::database_path_for(&config_path);
+    let store = Store::open_file(&db_path.to_string_lossy()).expect("failed to open database").into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let exchange_rate: Arc<dyn ExchangeRateProvider> = Arc::new(
         config
@@ -69,7 +168,7 @@ async fn main() {
         .monero_node
         .iter()
         .map(|(network, node_config)| {
-            let accept_self_signed = node_config.accept_self_signed_certs && !args.strict_tls;
+            let accept_self_signed = node_config.accept_self_signed_certs && !strict_tls;
             let client: Arc<dyn MoneroDaemonClient> = Arc::new(
                 RpcDaemonClient::new(&node_config.host, node_config.port, node_config.ssl, accept_self_signed)
                     .unwrap_or_else(|e| panic!("failed to build Monero daemon RPC client for {network:?}: {e}")),
